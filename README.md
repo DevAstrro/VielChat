@@ -20,7 +20,8 @@ Open `http://localhost:3000` in two separate browser profiles. Create a session 
 - Invitation expiry after 10 minutes; active session expiry after one hour.
 - Session and invitation state kept in process memory only; no database or application-level chat/file storage.
 - WebSocket Origin validation against `PUBLIC_ORIGIN`; WebSocket payload limit; allowlisted signaling message types and bounded SDP/ICE payloads.
-- Connection count limit per observed IP (single process only; not a complete DoS defense).
+- Connection count limit per observed IP, per-IP session creation throttling, a global in-memory room cap, and WebSocket heartbeat checks (single process only; not a complete DoS defense).
+- Production startup rejects a non-HTTPS `PUBLIC_ORIGIN`; WebSocket CSP is limited to the configured public origin.
 - Security headers: restrictive Content Security Policy, no-referrer, nosniff, no-store, COOP/CORP; HSTS when `NODE_ENV=production`.
 - No Google scripts, fonts, analytics, or default Google STUN service.
 - Text and file content transferred over WebRTC DataChannel; WebRTC encrypts the transport.
@@ -73,3 +74,8 @@ Open `http://localhost:3000` in two separate browser profiles. Create a session 
 - Pure-black canvas, ambient blurred orbs, frosted glass panels, subtle emerald glow, responsive chat composer, reduced-motion support.
 - Code-entry choreography inspired by the supplied HTML: four tiles form a square, a glowing outline traces the loop, then the lock panel appears.
 - Animated connection success, message entry, file-transfer progress, and session-destruction screen.
+
+
+## Security hardening branch (October 2026)
+
+This branch adds resource-abuse limits and an explicit manual identity-verification gate while preserving the current text, file-sharing, UI, and session lifecycle code. Production requires `NODE_ENV=production` with an exact HTTPS `PUBLIC_ORIGIN`. The server still cannot guarantee authenticated peer identity against a malicious signaling server: the manual verification code must be compared over a separate trusted channel. Reverse-proxy IP handling, external DDoS protection, dependency auditing, integration tests, and an independent protocol review remain release requirements. This change has not been merged or deployed.
