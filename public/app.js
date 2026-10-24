@@ -417,9 +417,8 @@ document.addEventListener('visibilitychange', () => {
   if (!screens.chat.classList.contains('hidden') && document.visibilityState === 'hidden') $('privacyVeil').classList.remove('hidden');
   else $('privacyVeil').classList.add('hidden');
 });
-window.addEventListener('pagehide', () => {
-  try { sendSignal({type:'end'}); ws?.close(); peer?.close(); channel?.close(); } catch {}
-  clearLocalData();
-});
+// Do not destroy sessions on pagehide: mobile browsers may fire lifecycle events
+// while opening the system file picker. The server will clean up when sockets truly close.
+window.addEventListener('pagehide', () => {});
 $('fileInput').disabled=true;
 setStatus('Ready');
