@@ -12,11 +12,14 @@ const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || `http://localhost:${PORT}`;
 const publicUrl = new URL(PUBLIC_ORIGIN);
+if (process.env.NODE_ENV === 'production' && publicUrl.protocol !== 'https:') {
+  throw new Error('PUBLIC_ORIGIN must use https:// in production.');
+}
 const websocketOrigin = `${publicUrl.protocol === 'https:' ? 'wss:' : 'ws:'}//${publicUrl.host}`;
 
 app.disable('x-powered-by');
 app.use((_req, res, next) => {
-  res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ${websocketOrigin}; img-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
+  res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' ${websocketOrigin}; img-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
@@ -35,7 +38,11 @@ const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // exactly 32 symbols
 const inviteTtl = 10 * 60 * 1000;
 const activeTtl = 60 * 60 * 1000;
 const maxConnectionsPerIp = 8;
+const maxRooms = 500;
+const maxCreatesPerIp = 5;
+const createWindowMs = 10 * 60 * 1000;
 const ipConnections = new Map();
+const createAttempts = new Map();
 
 function makeCode() {
   // Rejection sampling avoids modulo bias; 25 chars from 32 symbols = 125 bits.
@@ -49,9 +56,12 @@ function makeCode() {
   return out;
 }
 function send(ws, data) {
-  if (ws.readyState === WebSocket.OPEN) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  try {
     const payload = JSON.stringify(data);
     if (payload.length <= 15_000) ws.send(payload);
+  } catch {
+    try { ws.close(1011, 'Unable to send message'); } catch {}
   }
 }
 function destroyRoom(id, reason='session-ended') {
@@ -93,6 +103,8 @@ server.on('upgrade',(req,socket,head)=>{
 wss.on('connection',ws=>{
   let authenticated=false;
   let messageWindowStart=Date.now(), messageCount=0, invalidJoinAttempts=0;
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
   const authTimer=setTimeout(()=>{if(!authenticated)ws.close(1008,'Join/create timeout');},10_000);
   ws.on('message',raw=>{
     const now=Date.now();
@@ -104,6 +116,13 @@ wss.on('connection',ws=>{
     if(!msg||typeof msg.type!=='string'){ws.close(1008,'Invalid message');return;}
     if(!authenticated){
       if(msg.type==='create'){
+        if (rooms.size >= maxRooms) { send(ws,{type:'error',message:'Service is busy. Try again later.'}); return; }
+        const ip = ws._ipKey || 'unknown';
+        let attempt = createAttempts.get(ip);
+        if (!attempt || Date.now() - attempt.start >= createWindowMs) attempt = { start: Date.now(), count: 0 };
+        if (attempt.count >= maxCreatesPerIp) { send(ws,{type:'error',message:'Too many sessions created from this network. Try again later.'}); return; }
+        attempt.count++;
+        createAttempts.set(ip, attempt);
         let code;
         do { code=makeCode(); } while(rooms.has(code));
         const room={createdAt:Date.now(),expiresAt:Date.now()+inviteTtl,peers:new Map(),active:false};
@@ -154,8 +173,18 @@ wss.on('connection',ws=>{
 const expirySweep=setInterval(()=>{
   const now=Date.now();
   for(const [id,room] of rooms)if(room.expiresAt<=now)destroyRoom(id,'session-expired');
+  for(const [ip,attempt] of createAttempts)if(now-attempt.start>=createWindowMs)createAttempts.delete(ip);
 },30_000);
 expirySweep.unref();
+
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) { ws.terminate(); continue; }
+    ws.isAlive = false;
+    try { ws.ping(); } catch { ws.terminate(); }
+  }
+}, 30_000);
+heartbeat.unref();
 
 app.get('/healthz',(_req,res)=>res.status(200).json({ok:true}));
 server.listen(PORT,()=>console.log(`VeilChat listening on port ${PORT}`));
