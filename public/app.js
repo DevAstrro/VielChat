@@ -251,6 +251,9 @@ async function handleSignal(msg) {
     showScreen('chat'); setStatus('Connecting');
     setupPeer();
     if (role === 'creator') {
+      // The offerer must create the data channel before generating the offer.
+      // The joining peer receives it through the ondatachannel handler.
+      if (!channel) attachChannel(peer.createDataChannel('chat', { ordered: true }));
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
       sendSignal({type:'offer',sdp:peer.localDescription.sdp});
