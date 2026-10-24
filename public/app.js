@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const screens = { entry: $('entryScreen'), invite: $('inviteScreen'), chat: $('chatScreen') };
 let ws = null, peer = null, channel = null, role = null, joined = false, ending = false;
 let sessionCode = null, pendingIce = [], activeTransfers = new Map(), objectUrls = new Set();
-let soundEnabled = false, audioContext = null;
+let soundEnabled = false, audioContext = null, verificationApproved = false;
 let entryAnimationPromise = Promise.resolve();
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const CHUNK_BYTES = 8 * 1024;
@@ -166,9 +166,7 @@ function setupPeer() {
     if (peer.connectionState === 'connected') {
       setStatus('Connected','good');
       $('securityBanner').classList.add('connection-ready');
-      $('messageInput').disabled = false;
-      $('sendBtn').disabled = false;
-      $('fileInput').disabled = false;
+      setComposerEnabled(verificationApproved);
       $('messageInput').focus({ preventScroll:true });
       beep(880,.14);
       $('chatScreen').classList.remove('hidden');
@@ -183,9 +181,7 @@ function attachChannel(ch) {
   channel.bufferedAmountLowThreshold = 64 * 1024;
   channel.onopen = () => {
     $('peerState').textContent = 'Encrypted peer connection established';
-    $('messageInput').disabled = false;
-    $('sendBtn').disabled = false;
-    $('fileInput').disabled = false;
+    setComposerEnabled(verificationApproved);
     setStatus('Connected','good');
     $('securityBanner').classList.add('connection-ready');
     $('messageInput').focus({preventScroll:true});
@@ -294,6 +290,7 @@ async function updateVerificationCode() {
   const pair = [a,b].sort().join('|');
   const hash = await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pair));
   $('verificationCode').textContent = [...new Uint8Array(hash)].slice(0,8).map(v=>v.toString(16).padStart(2,'0')).join('').toUpperCase().match(/.{1,4}/g).join('-');
+  $('verificationApproveBtn').disabled = false;
 }
 
 $('copyBtn').addEventListener('click', async () => {
@@ -305,6 +302,20 @@ $('endBtn').addEventListener('click', () => {
   if (confirm('End the session for both people and clear this browser’s temporary chat data? Saved copies on either device cannot be erased.')) destroySession();
 });
 
+function setComposerEnabled(enabled) {
+  $('messageInput').disabled = !enabled;
+  $('sendBtn').disabled = !enabled;
+  $('fileInput').disabled = !enabled;
+  $('verificationApproveBtn').disabled = !($('verificationCode').textContent && !$('verificationCode').textContent.startsWith('Waiting'));
+}
+$('verificationApproveBtn').addEventListener('click', () => {
+  if (!$('verificationCode').textContent || $('verificationCode').textContent.startsWith('Waiting')) return;
+  verificationApproved = true;
+  setComposerEnabled(true);
+  $('verificationApproveBtn').textContent = 'Verification acknowledged';
+  $('verificationApproveBtn').disabled = true;
+  $('verificationBannerText').textContent = 'You confirmed that the code matches your contact over a separate trusted channel.';
+});
 function setTransferStatus(text) { $('transferStatus').textContent = text || ''; }
 const allowedExtensions = /\.(png|jpe?g|gif|webp|avif|bmp|pdf|txt|md|docx?|xlsx?|pptx?|odt|ods|rtf|csv)$/i;
 function bytesToBase64(bytes) {
@@ -359,16 +370,26 @@ function handleFilePacket(p) {
   }
 }
 function renderFile(t) {
+  // Never trust a peer-supplied filename or MIME type for inline rendering.
+  const safeName = String(t.name || 'shared-file')
+    .replace(/[\\u0000-\\u001f\\u007f-\\u009f\\u202a-\\u202e\\u2066-\\u2069]/g, '')
+    .replace(/[\\/\\\\]/g, '_').slice(0,120) || 'shared-file';
+  const inlineTypes = new Set(['image/png','image/jpeg','image/gif','image/webp']);
+  const safeMime = inlineTypes.has(String(t.mime).toLowerCase()) ? String(t.mime).toLowerCase() : 'application/octet-stream';
+  if (!confirm(`Accept the file "${safeName}" (${(t.size/1024).toFixed(1)} KB)? Only open files you trust.`)) {
+    setTransferStatus('Incoming file rejected.');
+    return;
+  }
   const wrap=document.createElement('article');wrap.className='message file-message';
   const who=document.createElement('small');who.textContent='PEER SHARED';
-  const name=document.createElement('div');name.textContent=t.name;
-  const meta=document.createElement('div');meta.className='file-meta';meta.textContent=`${(t.size/1024).toFixed(1)} KB · ${t.mime}`;
-  const blob=new Blob(t.chunks,{type:t.mime||'application/octet-stream'}), url=URL.createObjectURL(blob);objectUrls.add(url);
+  const name=document.createElement('div');name.textContent=safeName;
+  const meta=document.createElement('div');meta.className='file-meta';meta.textContent=`${(t.size/1024).toFixed(1)} KB · ${safeMime}`;
+  const blob=new Blob(t.chunks,{type:safeMime}), url=URL.createObjectURL(blob);objectUrls.add(url);
   wrap.append(who,name,meta);
-  if(t.mime.startsWith('image/')){
-    const img=document.createElement('img');img.className='shared-image';img.alt=t.name;img.loading='lazy';img.src=url;wrap.append(img);
+  if(inlineTypes.has(safeMime)){
+    const img=document.createElement('img');img.className='shared-image';img.alt=safeName;img.loading='lazy';img.src=url;wrap.append(img);
   }
-  const link=document.createElement('a');link.className='file-download';link.href=url;link.download=t.name;link.rel='noopener';link.textContent='Download file';wrap.append(link);
+  const link=document.createElement('a');link.className='file-download';link.href=url;link.download=safeName;link.rel='noopener';link.textContent='Download file';wrap.append(link);
   $('messages').append(wrap);scrollToBottom();
 }
 function clearLocalData() {
@@ -397,6 +418,7 @@ function destroySession() {
 }
 function endLocal(reason, initiated=false) {
   joined=false;
+  verificationApproved=false;
   try { if(channel && channel.readyState==='open') channel.close(); } catch {}
   try { peer?.close(); } catch {}
   peer=null;channel=null;
