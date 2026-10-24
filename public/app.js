@@ -10,13 +10,16 @@ const CHUNK_BYTES = 8 * 1024;
 const MAX_TEXT = 4000;
 const MAX_TOTAL_INCOMING = 12 * 1024 * 1024;
 const ALPHABET = /^[A-HJ-NP-Z2-9]{25}$/;
-const rtcConfig = { iceServers: [] }; // No Google/third-party STUN by default.
-
+const rtcConfig = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
+  ]
+}; // STUN helps discover network routes; TURN may still be needed on restrictive networks.
 
 function runCodeAnimation() {
   const stage = $('codeStage');
   stage.classList.remove('animating','unlocked');
-  // Force style recalculation so the animation can replay for every session.
   void stage.offsetWidth;
   stage.classList.add('animating');
   return new Promise(resolve => {
@@ -134,7 +137,6 @@ async function joinSession() {
   const code = $('codeInput').value.trim().toUpperCase();
   if (!ALPHABET.test(code)) { showError('Enter the complete 25-character invitation code.'); return; }
   $('joinBtn').disabled = true;
-  // Reuse the reference's four-tile -> glowing loop -> unlocked glass choreography.
   setMode('create');
   entryAnimationPromise = runCodeAnimation();
   try {
@@ -408,7 +410,6 @@ function endLocal(reason, initiated=false) {
 $('securityInfoBtn').addEventListener('click', () => $('securityDialog').showModal());
 $('closeSecurityDialog').addEventListener('click', () => $('securityDialog').close());
 
-// Best-effort privacy veil. Websites cannot reliably block screenshots or detect every capture path.
 document.addEventListener('visibilitychange', () => {
   if (!screens.chat.classList.contains('hidden') && document.visibilityState === 'hidden') $('privacyVeil').classList.remove('hidden');
   else $('privacyVeil').classList.add('hidden');
