@@ -348,7 +348,8 @@ function handleFilePacket(p) {
     if(!t.chunks[p.index]){
       try { const bytes=base64ToBytes(p.data); t.chunks[p.index]=bytes; t.received+=bytes.byteLength; }
       catch { activeTransfers.delete(p.id); setTransferStatus('Invalid file chunk; discarded.'); return; }
-      if(t.received>t.size||t.received>MAX_TOTAL_INCOMING){activeTransfers.delete(p.id);setTransferStatus('File exceeds transfer limits.');}
+      const totalIncoming = [...activeTransfers.values()].reduce((sum, transfer) => sum + transfer.received, 0);
+      if(t.received>t.size||totalIncoming>MAX_TOTAL_INCOMING){activeTransfers.delete(p.id);setTransferStatus('Combined incoming files exceed the transfer limit.');}
     } return;
   }
   if(p.kind==='file-end'){
