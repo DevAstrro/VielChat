@@ -12,6 +12,9 @@ const server = http.createServer(app);
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || `http://localhost:${PORT}`;
 const publicUrl = new URL(PUBLIC_ORIGIN);
+if (process.env.NODE_ENV === 'production' && publicUrl.protocol !== 'https:') {
+  throw new Error('PUBLIC_ORIGIN must use https:// in production.');
+}
 const websocketOrigin = `${publicUrl.protocol === 'https:' ? 'wss:' : 'ws:'}//${publicUrl.host}`;
 
 app.disable('x-powered-by');
@@ -35,7 +38,13 @@ const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // exactly 32 symbols
 const inviteTtl = 10 * 60 * 1000;
 const activeTtl = 60 * 60 * 1000;
 const maxConnectionsPerIp = 8;
+const maxRooms = 500;
+const maxRoomCreatesPerWindow = 5;
+const createWindowMs = 10 * 60 * 1000;
 const ipConnections = new Map();
+const createAttempts = new Map();
+const MAX_SIGNAL_RATE = 80;
+const SIGNAL_RATE_WINDOW_MS = 10_000;
 
 function makeCode() {
   // Rejection sampling avoids modulo bias; 25 chars from 32 symbols = 125 bits.
@@ -91,6 +100,8 @@ server.on('upgrade',(req,socket,head)=>{
 });
 
 wss.on('connection',ws=>{
+  ws.isAlive = true;
+  ws.on('pong',()=>{ ws.isAlive = true; });
   let authenticated=false;
   let messageWindowStart=Date.now(), messageCount=0, invalidJoinAttempts=0;
   const authTimer=setTimeout(()=>{if(!authenticated)ws.close(1008,'Join/create timeout');},10_000);
@@ -104,6 +115,13 @@ wss.on('connection',ws=>{
     if(!msg||typeof msg.type!=='string'){ws.close(1008,'Invalid message');return;}
     if(!authenticated){
       if(msg.type==='create'){
+        if (rooms.size >= maxRooms) { send(ws,{type:'error',message:'Service is busy. Try again later.'}); return; }
+        const ip = ws._ipKey || 'unknown';
+        const attempt = createAttempts.get(ip) || { count: 0, start: Date.now() };
+        if (Date.now() - attempt.start >= createWindowMs) { attempt.count = 0; attempt.start = Date.now(); }
+        if (attempt.count >= maxRoomCreatesPerWindow) { send(ws,{type:'error',message:'Too many sessions created from this network. Try again later.'}); return; }
+        attempt.count++;
+        createAttempts.set(ip, attempt);
         let code;
         do { code=makeCode(); } while(rooms.has(code));
         const room={createdAt:Date.now(),expiresAt:Date.now()+inviteTtl,peers:new Map(),active:false};
@@ -154,7 +172,18 @@ wss.on('connection',ws=>{
 const expirySweep=setInterval(()=>{
   const now=Date.now();
   for(const [id,room] of rooms)if(room.expiresAt<=now)destroyRoom(id,'session-expired');
+  for (const [ip, attempt] of createAttempts) if (now - attempt.start >= createWindowMs) createAttempts.delete(ip);
 },30_000);
+expirySweep.unref();
+
+const heartbeat = setInterval(()=>{
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) { ws.terminate(); continue; }
+    ws.isAlive = false;
+    try { ws.ping(); } catch { ws.terminate(); }
+  }
+},30_000);
+heartbeat.unref();
 expirySweep.unref();
 
 app.get('/healthz',(_req,res)=>res.status(200).json({ok:true}));
